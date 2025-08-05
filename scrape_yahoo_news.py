@@ -1,114 +1,180 @@
 import os
+import time
+from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import requests
-from datetime import datetime
-import time
-import json # ここにjsonライブラリを追加
+from bs4 import BeautifulSoup
+import json
+
+# Google Sheets認証
+try:
+    credentials_json_str = os.getenv('GOOGLE_CREDENTIALS')
+    if not credentials_json_str:
+        raise ValueError("環境変数 'GOOGLE_CREDENTIALS' が設定されていません")
+    
+    credentials_info = json.loads(credentials_json_str)
+    
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
+    gc = gspread.authorize(credentials)
+except Exception as e:
+    print(f"Error loading credentials: {e}")
+    exit()
 
 # Google Sheets設定
 INPUT_SPREADSHEET_ID = '1ELh95L385GfNcJahAx1mUH4SZBHtKImBp_wAAsQALkM'
 OUTPUT_SPREADSHEET_ID = '1Fn3AtGDRmEzn3Leu7-wVPU3KrO7rS1nMfdSG7bcYrLI'
 DATE_STR = datetime.now().strftime('%y%m%d')
 
-def get_google_sheet_client():
-    """Google Sheetsクライアントを認証して返す"""
-    credentials_json_str = os.getenv('GOOGLE_SERVICE_ACCOUNT_CREDENTIALS')
-    if not credentials_json_str:
-        raise ValueError("環境変数 'GOOGLE_SERVICE_ACCOUNT_CREDENTIALS' が設定されていません")
+# Selenium設定
+chrome_options = Options()
+chrome_options.add_argument('--headless')
+chrome_options.add_argument('--no-sandbox')
+chrome_options.add_argument('--disable-dev-shm-usage')
+browser = webdriver.Chrome(options=chrome_options)
 
-    # 環境変数から取得したJSON文字列を辞書に変換
+# 入力スプレッドシートからURLを取得
+print(f"--- Getting URLs from input sheet ---")
+sh_input = gc.open_by_key(INPUT_SPREADSHEET_ID)
+
+# 提供されたスプレッドシートのシート名に合わせて修正
+# `250805_O2_Yahoo` の形式を動的に作成
+input_worksheet_name = f'{DATE_STR}_O2_Yahoo'
+
+try:
+    input_ws = sh_input.worksheet(input_worksheet_name)
+    # 提供されたスプレッドシート画像ではURLがC列にあるため、col_values(3)に修正
+    input_urls = [url for url in input_ws.col_values(3)[1:] if url]
+    print(f"Found {len(input_urls)} URLs to process in worksheet '{input_worksheet_name}'.")
+except gspread.WorksheetNotFound:
+    print(f"Worksheet '{input_worksheet_name}' not found in input spreadsheet. Exiting.")
+    browser.quit()
+    exit()
+
+# 出力スプレッドシートを設定
+sh_output = gc.open_by_key(OUTPUT_SPREADSHEET_ID)
+print(f"--- Checking output sheet for '{DATE_STR}' ---")
+
+if DATE_STR in [ws.title for ws in sh_output.worksheets()]:
+    date_ws = sh_output.worksheet(DATE_STR)
+    sh_output.del_worksheet(date_ws)
+    print(f"Existing sheet '{DATE_STR}' deleted.")
+
+# 新しいシートを作成し、ヘッダーを1行目に設定
+new_ws = sh_output.add_worksheet(title=DATE_STR, rows="1000", cols="30")
+header = ['No.', 'タイトル', 'URL', '発行日時', '本文']
+comment_cols = ['コメント数', 'コメント']
+header_row = header + [''] * 9 + comment_cols
+
+full_header = [''] * 15
+full_header[0:5] = ['No.', 'タイトル', 'URL', '発行日時', '本文']
+full_header[14] = 'コメント数'
+full_header[15:] = ['コメント'] * (len(full_header) - 15)
+
+new_ws.update('A1:P1', [full_header])
+print(f"Created new sheet: {new_ws.title}")
+
+# ニュース記事の処理
+print("--- Starting URL processing ---")
+if not input_urls:
+    print("No URLs to process. Exiting.")
+    browser.quit()
+    exit()
+
+all_data_to_write = []
+
+for idx, base_url in enumerate(input_urls, start=1):
     try:
-        credentials = json.loads(credentials_json_str)
-    except json.JSONDecodeError:
-        raise ValueError("環境変数 'GOOGLE_SERVICE_ACCOUNT_CREDENTIALS' の形式が不正です。有効なJSON文字列を設定してください。")
+        print(f"  - Processing URL {idx}/{len(input_urls)}: {base_url}")
+        
+        headers_req = {'User-Agent': 'Mozilla/5.0'}
+        
+        article_bodies = []
+        page = 1
+        print("    - Processing article body...")
+        title = '取得不可'
+        article_date = '取得不可'
+        while True:
+            url = base_url if page == 1 else f"{base_url}?page={page}"
+            res = requests.get(url, headers=headers_req)
+            soup = BeautifulSoup(res.text, 'html.parser')
 
-    scope = ['https://spreadsheets.google.com/feeds',
-             'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials, scope)
-    client = gspread.authorize(creds)
-    return client
-
-def get_yahoo_news_urls(client):
-    """入力スプレッドシートからYahoo!ニュースのURLを取得する"""
-    try:
-        spreadsheet = client.open_by_key(INPUT_SPREADSHEET_ID)
-        worksheet = spreadsheet.worksheet('URLリスト')
-        urls = worksheet.col_values(1)[1:]  # ヘッダー行をスキップ
-        return [url.strip() for url in urls if url.strip()]
-    except gspread.exceptions.SpreadsheetNotFound:
-        print(f"スプレッドシートID: {INPUT_SPREADSHEET_ID} が見つかりません。")
-        return []
-
-def scrape_news(url):
-    """指定されたURLのYahoo!ニュース記事からタイトルと本文をスクレイピングする"""
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 記事タイトルを取得
-        title_element = soup.find('h1', class_='sc-dcJpzm iCqIeT')
-        title = title_element.text.strip() if title_element else 'タイトル取得失敗'
-        
-        # 記事本文を取得
-        article_text_element = soup.find('div', class_='sc-dcJpzm gLgWvM')
-        article_text = article_text_element.text.strip() if article_text_element else '本文取得失敗'
-        
-        return title, article_text
-    except requests.exceptions.RequestException as e:
-        print(f"URL: {url} の取得中にエラーが発生しました: {e}")
-        return '取得失敗', '取得失敗'
-
-def write_to_google_sheet(client, data):
-    """スクレイピングしたデータをスプレッドシートに書き込む"""
-    try:
-        spreadsheet = client.open_by_key(OUTPUT_SPREADSHEET_ID)
-        # 現在の日付でワークシートを作成または取得
-        try:
-            worksheet = spreadsheet.worksheet(DATE_STR)
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=DATE_STR, rows="100", cols="4")
-        
-        # ヘッダー行を設定
-        if not worksheet.row_values(1):
-            worksheet.append_row(['記事タイトル', '記事本文', 'URL', '取得日時'])
-        
-        # データを追記
-        worksheet.append_rows(data)
-        print(f"データをスプレッドシート '{DATE_STR}' に書き込みました。")
-    except gspread.exceptions.SpreadsheetNotFound:
-        print(f"出力スプレッドシートID: {OUTPUT_SPREADSHEET_ID} が見つかりません。")
-
-def main():
-    """メイン処理"""
-    print('スクリプトを開始します...')
-    try:
-        client = get_google_sheet_client()
-        urls = get_yahoo_news_urls(client)
-        
-        if not urls:
-            print("スクレイピング対象のURLがありません。")
-            return
+            if page == 1:
+                title_tag = soup.find('title')
+                title = title_tag.get_text(strip=True).replace(' - Yahoo!ニュース', '') if title_tag else '取得不可'
+                date_tag = soup.find('time')
+                article_date = date_tag.get_text(strip=True) if date_tag else '取得不可'
             
-        scraped_data = []
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        for url in urls:
-            title, text = scrape_news(url)
-            scraped_data.append([title, text, url, current_time])
-            time.sleep(2)  # 連続アクセスを避けるための遅延
-        
-        if scraped_data:
-            write_to_google_sheet(client, scraped_data)
-        else:
-            print("スクレイピングされたデータがありません。")
+            article_body_container = soup.find('article')
+            if article_body_container:
+                body_elements = article_body_container.find_all('p')
+                body_text = '\n'.join([p.get_text(strip=True) for p in body_elements])
+            else:
+                body_text = ''
+            
+            if not body_text or body_text in article_bodies:
+                break
+            
+            article_bodies.append(body_text)
+            page += 1
+            if page > 10:
+                break
+                
+        print(f"    - Article Title: {title}")
+        print(f"    - Article Date: {article_date}")
+        print(f"    - Found {len(article_bodies)} body pages.")
 
-    except ValueError as e:
-        print(e)
+        comments = []
+        comment_page = 1
+        print("    - Scraping comments with Selenium...")
+        while True:
+            comment_url = f"{base_url}/comments?page={comment_page}"
+            browser.get(comment_url)
+            time.sleep(2)
+            
+            soup_comments = BeautifulSoup(browser.page_source, 'html.parser')
+            comment_elements = soup_comments.find_all('p', class_='sc-169yn8p-10')
+            page_comments = [p.get_text(strip=True) for p in comment_elements]
+            
+            if not page_comments or page_comments[0] in comments:
+                break
+            
+            comments.extend(page_comments)
+            comment_page += 1
+            if comment_page > 10:
+                break
+
+        print(f"    - Found {len(comments)} comments.")
+
+        row_data = [idx, title, base_url, article_date, article_bodies[0]]
+        row_data.extend([''] * 9)
+        row_data.append(len(comments))
+        row_data.extend(comments)
+
+        all_data_to_write.append(row_data)
+        
+        for i in range(1, len(article_bodies)):
+            all_data_to_write.append([''] * 4 + [article_bodies[i]] + [''] * 20)
+
+        print(f"  - Successfully processed data for URL {idx}. Storing for batch update.")
+
     except Exception as e:
-        print(f"予期せぬエラーが発生しました: {e}")
+        print(f"  - Error processing URL {idx}: {e}")
+        print("  - An error occurred. Continuing to the next URL.")
 
-if __name__ == '__main__':
-    main()
+if all_data_to_write:
+    start_row = 2
+    start_cell = f'A{start_row}'
+    new_ws.update(range_name=start_cell, values=all_data_to_write)
+    print(f"--- All processed data has been written to the sheet, starting from {start_cell} ---")
+else:
+    print("No data to write. The sheet will remain empty except for the header.")
+
+browser.quit()
+print("--- Scraping job finished ---")
