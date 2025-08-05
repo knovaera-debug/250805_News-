@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 import requests
 from datetime import datetime
 import time
+import json # ここにjsonライブラリを追加
 
 # Google Sheets設定
 INPUT_SPREADSHEET_ID = '1ELh95L385GfNcJahAx1mUH4SZBHtKImBp_wAAsQALkM'
@@ -13,10 +14,16 @@ DATE_STR = datetime.now().strftime('%y%m%d')
 
 def get_google_sheet_client():
     """Google Sheetsクライアントを認証して返す"""
-    credentials = os.getenv('GOOGLE_SERVICE_ACCOUNT_CREDENTIALS')
-    if not credentials:
+    credentials_json_str = os.getenv('GOOGLE_SERVICE_ACCOUNT_CREDENTIALS')
+    if not credentials_json_str:
         raise ValueError("環境変数 'GOOGLE_SERVICE_ACCOUNT_CREDENTIALS' が設定されていません")
-    
+
+    # 環境変数から取得したJSON文字列を辞書に変換
+    try:
+        credentials = json.loads(credentials_json_str)
+    except json.JSONDecodeError:
+        raise ValueError("環境変数 'GOOGLE_SERVICE_ACCOUNT_CREDENTIALS' の形式が不正です。有効なJSON文字列を設定してください。")
+
     scope = ['https://spreadsheets.google.com/feeds',
              'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(credentials, scope)
@@ -42,10 +49,12 @@ def scrape_news(url):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # 記事タイトルを取得
-        title = soup.find('h1', class_='sc-dcJpzm iCqIeT').text.strip() if soup.find('h1', class_='sc-dcJpzm iCqIeT') else 'タイトル取得失敗'
+        title_element = soup.find('h1', class_='sc-dcJpzm iCqIeT')
+        title = title_element.text.strip() if title_element else 'タイトル取得失敗'
         
         # 記事本文を取得
-        article_text = soup.find('div', class_='sc-dcJpzm gLgWvM').text.strip() if soup.find('div', class_='sc-dcJpzm gLgWvM') else '本文取得失敗'
+        article_text_element = soup.find('div', class_='sc-dcJpzm gLgWvM')
+        article_text = article_text_element.text.strip() if article_text_element else '本文取得失敗'
         
         return title, article_text
     except requests.exceptions.RequestException as e:
