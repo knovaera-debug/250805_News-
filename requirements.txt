@@ -1,4 +1,5 @@
-gspread
-oauth2client
-beautifulsoup4
+gspread==5.12.0
+oauth2client==4.1.3
+selenium==4.20.0
+beautifulsoup4==4.12.3
 requests
