@@ -39,10 +39,12 @@ browser = webdriver.Chrome(options=chrome_options)
 print(f"--- Getting URLs from input sheet ---")
 sh_input = gc.open_by_key(INPUT_SPREADSHEET_ID)
 
-input_worksheet_name = f'{DATE_STR}_O2_Yahoo'
+# スプレッドシートのシート名に合わせて、日付のみを使用するように修正
+input_worksheet_name = DATE_STR
 
 try:
     input_ws = sh_input.worksheet(input_worksheet_name)
+    # 提供されたスプレッドシート画像ではURLがC列にあるため、col_values(3)に修正
     input_urls = [url for url in input_ws.col_values(3)[1:] if url]
     print(f"Found {len(input_urls)} URLs to process in worksheet '{input_worksheet_name}'.")
 except gspread.WorksheetNotFound:
@@ -59,6 +61,7 @@ if DATE_STR in [ws.title for ws in sh_output.worksheets()]:
     sh_output.del_worksheet(date_ws)
     print(f"Existing sheet '{DATE_STR}' deleted.")
 
+# 新しいシートを作成し、ヘッダーを1行目に設定
 new_ws = sh_output.add_worksheet(title=DATE_STR, rows="1000", cols="30")
 header = ['No.', 'タイトル', 'URL', '発行日時', '本文']
 comment_cols = ['コメント数', 'コメント']
