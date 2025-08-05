@@ -3,6 +3,7 @@ name: Scraping Yahoo News
 on:
   schedule:
     - cron: '30 6 * * *'  # JST 15:30
+  workflow_dispatch:
 
 jobs:
   build:
