@@ -14,12 +14,8 @@ import json
 
 # Google Sheets認証
 try:
-    credentials_json_str = os.getenv('GOOGLE_CREDENTIALS')
-    if not credentials_json_str:
-        raise ValueError("環境変数 'GOOGLE_CREDENTIALS' が設定されていません")
-    
-    credentials_info = json.loads(credentials_json_str)
-    
+    with open('credentials.json', 'r') as f:
+        credentials_info = json.load(f)
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scope)
     gc = gspread.authorize(credentials)
@@ -43,13 +39,10 @@ browser = webdriver.Chrome(options=chrome_options)
 print(f"--- Getting URLs from input sheet ---")
 sh_input = gc.open_by_key(INPUT_SPREADSHEET_ID)
 
-# 提供されたスプレッドシートのシート名に合わせて修正
-# `250805_O2_Yahoo` の形式を動的に作成
 input_worksheet_name = f'{DATE_STR}_O2_Yahoo'
 
 try:
     input_ws = sh_input.worksheet(input_worksheet_name)
-    # 提供されたスプレッドシート画像ではURLがC列にあるため、col_values(3)に修正
     input_urls = [url for url in input_ws.col_values(3)[1:] if url]
     print(f"Found {len(input_urls)} URLs to process in worksheet '{input_worksheet_name}'.")
 except gspread.WorksheetNotFound:
@@ -66,7 +59,6 @@ if DATE_STR in [ws.title for ws in sh_output.worksheets()]:
     sh_output.del_worksheet(date_ws)
     print(f"Existing sheet '{DATE_STR}' deleted.")
 
-# 新しいシートを作成し、ヘッダーを1行目に設定
 new_ws = sh_output.add_worksheet(title=DATE_STR, rows="1000", cols="30")
 header = ['No.', 'タイトル', 'URL', '発行日時', '本文']
 comment_cols = ['コメント数', 'コメント']
